@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EcoEra</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+            },
+            colors: {
+              'primary': '#16a34a',
+              'primary-dark': '#15803d',
+              'secondary': '#2563eb',
+              'danger': '#dc2626',
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, 'Noto Sans', 'Liberation Sans', sans-serif;
+        background: #f8fafc;
+        color: #0f172a;
+      }
+      .container {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 1rem;
+      }
+      .card {
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 1rem;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+      }
+      .btn {
+        cursor: pointer;
+        border: none;
+        border-radius: 8px;
+        padding: 10px 12px;
+        transition: background-color 0.2s;
+      }
+      .btn-primary { background: #16a34a; color: white; }
+      .btn-primary:hover { background: #15803d; }
+      .btn-secondary { background: #2563eb; color: white; }
+      .btn-secondary:hover { background: #1e40af; }
+      .btn-danger { background: #dc2626; color: white; }
+      .btn-danger:hover { background: #b91c1c; }
+      .link { background: none; border: none; color: #2563eb; cursor: pointer; padding: 0; }
+      .link:hover { text-decoration: underline; }
+      .grid { display: grid; gap: 1rem; }
+      .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .input {
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 8px 12px;
+        width: 100%;
+      }
+      .product-item {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        border-radius: 12px;
+        background: #fff;
+        padding: 12px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+      }
+      .product-item img {
+        width: 100%;
+        height: 150px;
+        object-fit: cover;
+        border-radius: 8px;
+        margin-bottom: 8px;
+      }
+    </style>
+  </head>
+  <body class="bg-gray-50 font-sans text-gray-800">
+
+    <div id="app" class="container mx-auto py-8">
+      <!-- UI will be rendered here -->
+    </div>
+    
+    <script type="module">
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-app.js";
+      import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-auth.js";
+      import { getFirestore, collection, onSnapshot, doc, getDoc, setDoc, updateDoc, deleteDoc, addDoc, query, where } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-firestore.js";
+      import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-storage.js";
+      
+      const app = initializeApp(JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}'));
+      const db = getFirestore(app);
+      const auth = getAuth(app);
+      const storage = getStorage(app);
+
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      let userId = '';
+
+      const state = {
+        user: null,
+        view: "auth",
+        listings: [],
+        search: "",
+        category: "All",
+        newListing: { title: "", description: "", category: "Clothing", price: "", file: null },
+        preview: null,
+        selectedProduct: null,
+        cart: [],
+        purchases: [],
+        dashboardForm: { username: "", email: "", password: "", file: null },
+        profilePreview: null,
+        editListing: null,
+        loading: false,
+        error: "",
+        message: "",
+      };
+
+      const categories = ["All", "Clothing", "Electronics", "Books", "Furniture", "Other"];
+      const appElement = document.getElementById("app");
+
+      onAuthStateChanged(auth, async (currentUser) => {
+        if (currentUser) {
+          userId = currentUser.uid;
+          state.user = { id: userId, email: currentUser.email };
+          // Fetch additional user data from Firestore if available
+          const userDocRef = doc(db, `/artifacts/${appId}/users/${userId}/profile/data`);
+          const userDoc = await getDoc(userDocRef);
+          if (userDoc.exists()) {
+            state.user = { ...state.user, ...userDoc.data() };
+          }
+          await loadData();
+          state.view = "feed";
+          render();
+        } else {
+          // If not authenticated, try to sign in with custom token
+          if (typeof __initial_auth_token !== 'undefined') {
+            await signInWithCustomToken(auth, __initial_auth_token);
+          } else {
+            await signInAnonymously(auth);
+          }
+        }
+      });
+
+      async function loadData() {
+        if (!state.user) return;
+        state.loading = true;
+        render();
+        
+        // Listen for real-time updates on listings
+        const qListings = collection(db, `/artifacts/${appId}/public/data/listings`);
+        onSnapshot(qListings, (snapshot) => {
+          state.listings = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          state.loading = false;
+          render();
+        });
+
+        // Listen for real-time updates on cart
+        const qCart = collection(db, `/artifacts/${appId}/users/${userId}/cart`);
+        onSnapshot(qCart, (snapshot) => {
+          state.cart = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          state.loading = false;
+          render();
+        });
+
+        // Listen for real-time updates on purchases
+        const qPurchases = collection(db, `/artifacts/${appId}/users/${userId}/purchases`);
+        onSnapshot(qPurchases, (snapshot) => {
+          state.purchases = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          state.loading = false;
+          render();
+        });
+      }
+
+      function setState(newState) {
+        Object.assign(state, newState);
+        render();
+      }
+
+      function createEl(tag, attrs = {}, children = []) {
+        const el = document.createElement(tag);
+        for (const key in attrs) {
+          if (key.startsWith('on')) {
+            el.addEventListener(key.substring(2).toLowerCase(), attrs[key]);
+          } else {
+            el.setAttribute(key, attrs[key]);
+          }
+        }
+        const childArray = Array.isArray(children) ? children : (children ? [children] : []);
+        childArray.forEach(child => {
+          if (typeof child === 'string') {
+            el.appendChild(document.createTextNode(child));
+          } else {
+            el.appendChild(child);
+          }
+        });
+        return el;
+      }
+      
+      async function handleAuth(type) {
+        state.loading = true;
+        render();
+        const { email, password, username } = state.dashboardForm;
+        state.error = "";
+        
+        try {
+          if (type === "signup") {
+            const userDocRef = doc(db, `/artifacts/${appId}/users/${crypto.randomUUID()}/profile/data`);
+            await setDoc(userDocRef, { email, username, password });
+            state.message = "Signed up successfully! You can now log in.";
+            setState({ view: "auth", loading: false, dashboardForm: { username: "", email: "", password: "", file: null } });
+          } else {
+            const usersRef = collection(db, `/artifacts/${appId}/users`);
+            const q = query(usersRef, where("profile.data.email", "==", email), where("profile.data.password", "==", password));
+            const querySnapshot = await getDocs(q);
+            if (!querySnapshot.empty) {
+              const userDoc = querySnapshot.docs[0];
+              // This is a simplified login for demo purposes. Real auth would use Firebase Auth.
+              // We'll set the userId and simulate a logged-in state.
+              userId = userDoc.ref.parent.parent.id;
+              state.user = { id: userId, ...userDoc.data().profile.data };
+              state.message = "Logged in successfully!";
+              await loadData();
+              setState({ view: "feed", loading: false });
+            } else {
+              state.error = "Invalid email or password.";
+              setState({ loading: false });
+            }
+          }
+        } catch (e) {
+          state.error = "Failed to " + type + ". " + e.message;
+          setState({ loading: false });
+        }
+      }
+
+      async function updateProfile() {
+        state.loading = true;
+        render();
+        const { username, email, password, file } = state.dashboardForm;
+        state.error = "";
+        try {
+          const userDocRef = doc(db, `/artifacts/${appId}/users/${userId}/profile/data`);
+          const updateData = {};
+          if (username) updateData.username = username;
+          if (email) updateData.email = email;
+          if (password) updateData.password = password;
+          
+          if (file) {
+            const fileRef = ref(storage, `users/${userId}/profile/${file.name}`);
+            await uploadBytes(fileRef, file);
+            const imageUrl = await getDownloadURL(fileRef);
+            updateData.profileImageUrl = imageUrl;
+          }
+          await updateDoc(userDocRef, updateData, { merge: true });
+          state.user = { ...state.user, ...updateData };
+          state.message = "Profile updated successfully!";
+          setState({ loading: false });
+        } catch (e) {
+          state.error = "Failed to update profile. " + e.message;
+          setState({ loading: false });
+        }
+      }
+
+      async function handleNewListing() {
+        state.loading = true;
+        render();
+        const { title, description, category, price, file } = state.newListing;
+        state.error = "";
+
+        if (!title || !description || !price || !file) {
+          state.error = "Please fill all fields and select an image.";
+          setState({ loading: false });
+          return;
+        }
+
+        try {
+          const fileRef = ref(storage, `listings/${file.name}`);
+          await uploadBytes(fileRef, file);
+          const imageUrl = await getDownloadURL(fileRef);
+
+          await addDoc(collection(db, `/artifacts/${appId}/public/data/listings`), {
+            title,
+            description,
+            category,
+            price: parseFloat(price),
+            imageUrl,
+            sellerId: userId,
+            sellerName: state.user.username || 'Anonymous',
+            createdAt: Date.now(),
+          });
+          state.message = "Listing created successfully!";
+          setState({ view: "feed", loading: false, newListing: { title: "", description: "", category: "Clothing", price: "", file: null }, preview: null });
+        } catch (e) {
+          state.error = "Failed to create listing. " + e.message;
+          setState({ loading: false });
+        }
+      }
+
+      async function handleDeleteListing(listingId) {
+        state.loading = true;
+        render();
+        try {
+          await deleteDoc(doc(db, `/artifacts/${appId}/public/data/listings`, listingId));
+          state.message = "Listing deleted successfully.";
+          setState({ loading: false });
+        } catch (e) {
+          state.error = "Failed to delete listing. " + e.message;
+          setState({ loading: false });
+        }
+      }
+      
+      async function handleEditListing() {
+        state.loading = true;
+        render();
+        const { id, title, description, category, price, file } = state.editListing;
+        state.error = "";
+        
+        try {
+          const updateData = { title, description, category, price: parseFloat(price) };
+          if (file) {
+            const fileRef = ref(storage, `listings/${file.name}`);
+            await uploadBytes(fileRef, file);
+            updateData.imageUrl = await getDownloadURL(fileRef);
+          }
+          await updateDoc(doc(db, `/artifacts/${appId}/public/data/listings`, id), updateData);
+          state.message = "Listing updated successfully!";
+          setState({ view: "my-listings", loading: false, editListing: null });
+        } catch(e) {
+          state.error = "Failed to update listing. " + e.message;
+          setState({ loading: false });
+        }
+      }
+
+      async function addToCart(listing) {
+        state.loading = true;
+        render();
+        try {
+          await setDoc(doc(db, `/artifacts/${appId}/users/${userId}/cart`, listing.id), listing);
+          state.message = `${listing.title} added to cart!`;
+          setState({ loading: false });
+        } catch(e) {
+          state.error = "Failed to add to cart. " + e.message;
+          setState({ loading: false });
+        }
+      }
+
+      async function removeFromCart(listingId) {
+        state.loading = true;
+        render();
+        try {
+          await deleteDoc(doc(db, `/artifacts/${appId}/users/${userId}/cart`, listingId));
+          state.message = "Item removed from cart.";
+          setState({ loading: false });
+        } catch(e) {
+          state.error = "Failed to remove from cart. " + e.message;
+          setState({ loading: false });
+        }
+      }
+
+      async function checkout() {
+        state.loading = true;
+        render();
+        try {
+          for (const item of state.cart) {
+            await setDoc(doc(db, `/artifacts/${appId}/users/${userId}/purchases`, item.id), item);
+            await deleteDoc(doc(db, `/artifacts/${appId}/users/${userId}/cart`, item.id));
+          }
+          state.message = "Checkout successful!";
+          setState({ loading: false });
+        } catch(e) {
+          state.error = "Checkout failed. " + e.message;
+          setState({ loading: false });
+        }
+      }
+      
+      function render() {
+        let content;
+        const filteredListings = state.listings.filter(listing => {
+          const matchesSearch = listing.title.toLowerCase().includes(state.search.toLowerCase()) ||
+                                listing.description.toLowerCase().includes(state.search.toLowerCase());
+          const matchesCategory = state.category === "All" || listing.category === state.category;
+          return matchesSearch && matchesCategory;
+        });
+
+        const myFilteredListings = state.listings.filter(l => l.sellerId === userId);
+
+        const navBar = createEl('div', { class: 'bg-white p-4 flex justify-between items-center rounded-xl shadow-lg mb-8' }, [
+          createEl('div', { class: 'flex items-center space-x-2' }, [
+            createEl('i', { class: 'fa-solid fa-seedling text-primary text-3xl' }),
+            createEl('span', { class: 'text-2xl font-bold text-gray-900' }, ['EcoEra']),
+          ]),
+          createEl('div', { class: 'flex items-center space-x-4' }, [
+            createEl('button', { class: `link text-gray-800 font-semibold text-lg px-2 py-1 transition-colors ${state.view === 'feed' ? 'underline' : ''}`, onClick: () => setState({ view: "feed", search: "", category: "All" }) }, ['Feed']),
+            createEl('button', { class: `link text-gray-800 font-semibold text-lg px-2 py-1 transition-colors ${state.view === 'add-listing' ? 'underline' : ''}`, onClick: () => setState({ view: "add-listing" }) }, ['Add Listing']),
+            createEl('button', { class: `link text-gray-800 font-semibold text-lg px-2 py-1 transition-colors ${state.view === 'cart' ? 'underline' : ''}`, onClick: () => setState({ view: "cart" }) }, ['Cart (' + state.cart.length + ')']),
+            createEl('button', { class: `link text-gray-800 font-semibold text-lg px-2 py-1 transition-colors ${state.view === 'dashboard' ? 'underline' : ''}`, onClick: () => setState({ view: "dashboard", dashboardForm: { username: state.user?.username || '', email: state.user?.email || '', password: '', file: null } }) }, ['Dashboard']),
+            createEl('button', { class: `link text-gray-800 font-semibold text-lg px-2 py-1 transition-colors ${state.view === 'my-listings' ? 'underline' : ''}`, onClick: () => setState({ view: "my-listings" }) }, ['My Listings']),
+            createEl('button', { class: 'btn btn-danger', onClick: () => { window.location.reload(); } }, ['Logout']),
+          ]),
+        ]);
+
+        if (state.loading) {
+          content = createEl('div', { class: 'text-center text-lg mt-12 text-gray-500' }, ['Loading...']);
+        } else if (state.view === "auth") {
+          content = createEl('div', { class: 'max-w-md mx-auto card p-6 mt-12' }, [
+            createEl('h1', { class: 'text-center text-3xl font-bold mb-6 text-gray-900' }, ['EcoEra Marketplace']),
+            createEl('h2', { class: 'text-center text-lg mb-4' }, ['Sign Up or Log In']),
+            state.error ? createEl('div', { class: 'bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4' }, [state.error]) : createEl('div'),
+            state.message ? createEl('div', { class: 'bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded mb-4' }, [state.message]) : createEl('div'),
+            createEl('input', {
+              type: 'text',
+              class: 'input mb-4',
+              placeholder: 'Username (for signup)',
+              value: state.dashboardForm.username,
+              onInput: (e) => setState({ dashboardForm: { ...state.dashboardForm, username: e.target.value } })
+            }),
+            createEl('input', {
+              type: 'email',
+              class: 'input mb-4',
+              placeholder: 'Email',
+              value: state.dashboardForm.email,
+              onInput: (e) => setState({ dashboardForm: { ...state.dashboardForm, email: e.target.value } })
+            }),
+            createEl('input', {
+              type: 'password',
+              class: 'input mb-6',
+              placeholder: 'Password',
+              value: state.dashboardForm.password,
+              onInput: (e) => setState({ dashboardForm: { ...state.dashboardForm, password: e.target.value } })
+            }),
+            createEl('div', { class: 'flex justify-between space-x-4' }, [
+              createEl('button', { class: 'btn btn-primary flex-1', onClick: () => handleAuth('signup') }, ['Sign Up']),
+              createEl('button', { class: 'btn btn-secondary flex-1', onClick: () => handleAuth('login') }, ['Log In']),
+            ]),
+          ]);
+        } else if (state.view === "feed") {
+          content = createEl('div', {}, [
+            navBar,
+            createEl('div', { class: 'flex flex-col md:flex-row items-center justify-between mb-8' }, [
+              createEl('input', {
+                type: 'text',
+                class: 'input mb-4 md:mb-0 md:flex-1',
+                placeholder: 'Search listings...',
+                value: state.search,
+                onInput: (e) => setState({ search: e.target.value })
+              }),
+              createEl('select', {
+                class: 'input md:ml-4 w-full md:w-auto',
+                onInput: (e) => setState({ category: e.target.value })
+              }, categories.map(c => createEl('option', { value: c, selected: state.category === c }, [c]))),
+            ]),
+            createEl('div', { class: 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6' },
+              filteredListings.length > 0 ?
+                filteredListings.map(listing => createEl('div', { class: 'product-item card p-4 cursor-pointer', onClick: () => setState({ view: "detail", selectedProduct: listing }) }, [
+                  createEl('img', { src: listing.imageUrl || `https://placehold.co/400x400/16a34a/ffffff?text=${encodeURIComponent(listing.title)}`, alt: listing.title, class: 'w-full h-48 object-cover rounded-md mb-4' }),
+                  createEl('div', { class: 'text-left w-full' }, [
+                    createEl('h3', { class: 'font-bold text-lg mb-1' }, [listing.title]),
+                    createEl('p', { class: 'text-primary font-semibold text-xl mb-2' }, [`$${listing.price}`]),
+                    createEl('p', { class: 'text-sm text-gray-500 mb-2' }, [listing.description]),
+                    createEl('button', { class: 'btn btn-primary w-full', onClick: (e) => { e.stopPropagation(); addToCart(listing); } }, ['Add to Cart'])
+                  ])
+                ]))
+                : [createEl('p', { class: 'text-center col-span-3 text-gray-500' }, ['No listings found.'])]
+            )
+          ]);
+        } else if (state.view === "detail") {
+          const p = state.selectedProduct;
+          content = createEl('div', {}, [
+            navBar,
+            createEl('div', { class: 'card p-6 mt-6 max-w-2xl mx-auto' }, [
+              createEl('button', { class: 'link mb-4 text-sm', onClick: () => setState({ view: "feed" }) }, [createEl('i', { class: 'fa-solid fa-arrow-left mr-2' }), 'Back to Feed']),
+              createEl('img', { src: p.imageUrl || `https://placehold.co/600x400/16a34a/ffffff?text=${encodeURIComponent(p.title)}`, alt: p.title, class: 'w-full h-80 object-cover rounded-md mb-4' }),
+              createEl('h3', { class: 'text-3xl font-bold mb-2' }, [p.title]),
+              createEl('p', { class: 'text-xl text-primary font-semibold mb-4' }, [`$${p.price}`]),
+              createEl('p', { class: 'text-gray-700 mb-4' }, [p.description]),
+              createEl('p', { class: 'text-sm text-gray-500 mb-4' }, [`Category: ${p.category} | Listed by: ${p.sellerName || 'Anonymous'}`]),
+              createEl('button', { class: 'btn btn-primary w-full', onClick: () => addToCart(p) }, ['Add to Cart'])
+            ])
+          ]);
+        } else if (state.view === "cart") {
+          content = createEl('div', {}, [
+            navBar,
+            createEl('div', { class: 'card p-6 mt-6 max-w-2xl mx-auto' }, [
+              createEl('h2', { class: 'text-2xl font-bold mb-4' }, ['Shopping Cart']),
+              state.cart.length > 0 ? createEl('div', { class: 'space-y-4' }, [
+                ...state.cart.map(c => createEl('div', { class: 'flex items-center justify-between p-4 bg-gray-50 rounded-lg' }, [
+                  createEl('div', { class: 'flex items-center space-x-4' }, [
+                    createEl('img', { src: c.imageUrl || `https://placehold.co/64x64/2563eb/ffffff?text=${encodeURIComponent(c.title)}`, alt: c.title, class: 'w-16 h-16 object-cover rounded-md' }),
+                    createEl('span', { class: 'text-lg font-medium' }, [`${c.title} - $${c.price}`]),
+                  ]),
+                  createEl('button', { class: 'btn btn-danger', onClick: () => removeFromCart(c.id) }, ['Remove'])
+                ])),
+                createEl('button', { class: 'btn btn-primary w-full mt-4', onClick: checkout }, [`Checkout ($${state.cart.reduce((sum, item) => sum + item.price, 0).toFixed(2)})`])
+              ]) : [createEl('p', { class: 'text-gray-500 text-center' }, ['Your cart is empty.'])]
+            ])
+          ]);
+        } else if (state.view === "dashboard") {
+          content = createEl('div', {}, [
+            navBar,
+            createEl('div', { class: 'card p-6 mt-6 max-w-md mx-auto' }, [
+              createEl('h2', { class: 'text-2xl font-bold mb-4' }, ['User Dashboard']),
+              createEl('div', { class: 'flex items-center space-x-4 mb-6' }, [
+                state.user.profileImageUrl ?
+                  createEl('img', { src: state.user.profileImageUrl, alt: 'Profile', class: 'w-20 h-20 rounded-full object-cover' }) :
+                  createEl('div', { class: 'w-20 h-20 rounded-full bg-gray-200 flex items-center justify-center text-3xl text-gray-500' }, [createEl('i', { class: 'fa-solid fa-user' })]),
+                createEl('div', {}, [
+                  createEl('h3', { class: 'text-xl font-semibold' }, [state.user?.username || state.user?.email || 'User']),
+                  createEl('p', { class: 'text-sm text-gray-500' }, [`User ID: ${userId}`]),
+                ]),
+              ]),
+              createEl('div', { class: 'mb-4' }, [
+                createEl('label', { for: 'username', class: 'block text-sm font-medium mb-1' }, ['Username']),
+                createEl('input', {
+                  type: 'text',
+                  class: 'input',
+                  id: 'username',
+                  value: state.dashboardForm.username,
+                  onInput: (e) => setState({ dashboardForm: { ...state.dashboardForm, username: e.target.value } })
+                }),
+              ]),
+              createEl('div', { class: 'mb-4' }, [
+                createEl('label', { for: 'email', class: 'block text-sm font-medium mb-1' }, ['Email']),
+                createEl('input', {
+                  type: 'email',
+                  class: 'input',
+                  id: 'email',
+                  value: state.dashboardForm.email,
+                  onInput: (e) => setState({ dashboardForm: { ...state.dashboardForm, email: e.target.value } })
+                }),
+              ]),
+              createEl('div', { class: 'mb-4' }, [
+                createEl('label', { for: 'password', class: 'block text-sm font-medium mb-1' }, ['New Password']),
+                createEl('input', {
+                  type: 'password',
+                  class: 'input',
+                  id: 'password',
+                  value: state.dashboardForm.password,
+                  onInput: (e) => setState({ dashboardForm: { ...state.dashboardForm, password: e.target.value } })
+                }),
+              ]),
+              createEl('div', { class: 'mb-6' }, [
+                createEl('label', { for: 'profileImage', class: 'block text-sm font-medium mb-1' }, ['Profile Image']),
+                createEl('input', {
+                  type: 'file',
+                  class: 'input',
+                  id: 'profileImage',
+                  onChange: (e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onload = (e) => setState({ dashboardForm: { ...state.dashboardForm, file: e.target.files[0] } });
+                      reader.readAsDataURL(file);
+                    }
+                  }
+                }),
+              ]),
+              createEl('button', { class: 'btn btn-primary w-full', onClick: updateProfile }, ['Update Profile'])
+            ])
+          ]);
+        } else if (state.view === "add-listing") {
+          content = createEl('div', {}, [
+            navBar,
+            createEl('div', { class: 'card p-6 mt-6 max-w-md mx-auto' }, [
+              createEl('h2', { class: 'text-2xl font-bold mb-4' }, ['Create a New Listing']),
+              state.error ? createEl('div', { class: 'bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4' }, [state.error]) : createEl('div'),
+              createEl('div', { class: 'mb-4' }, [
+                createEl('label', { class: 'block text-sm font-medium mb-1' }, ['Title']),
+                createEl('input', {
+                  type: 'text',
+                  class: 'input',
+                  value: state.newListing.title,
+                  onInput: (e) => setState({ newListing: { ...state.newListing, title: e.target.value } })
+                }),
+              ]),
+              createEl('div', { class: 'mb-4' }, [
+                createEl('label', { class: 'block text-sm font-medium mb-1' }, ['Description']),
+                createEl('textarea', {
+                  class: 'input',
+                  value: state.newListing.description,
+                  onInput: (e) => setState({ newListing: { ...state.newListing, description: e.target.value } })
+                }),
+              ]),
+              createEl('div', { class: 'mb-4' }, [
+                createEl('label', { class: 'block text-sm font-medium mb-1' }, ['Category']),
+                createEl('select', {
+                  class: 'input',
+                  onInput: (e) => setState({ newListing: { ...state.newListing, category: e.target.value } })
+                }, categories.slice(1).map(c => createEl('option', { value: c, selected: state.newListing.category === c }, [c]))),
+              ]),
+              createEl('div', { class: 'mb-4' }, [
+                createEl('label', { class: 'block text-sm font-medium mb-1' }, ['Price ($)']),
+                createEl('input', {
+                  type: 'number',
+                  class: 'input',
+                  value: state.newListing.price,
+                  onInput: (e) => setState({ newListing: { ...state.newListing, price: e.target.value } })
+                }),
+              ]),
+              createEl('div', { class: 'mb-6' }, [
+                createEl('label', { class: 'block text-sm font-medium mb-1' }, ['Image']),
+                createEl('input', {
+                  type: 'file',
+                  class: 'input',
+                  onChange: (e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onload = (e) => setState({ preview: e.target.result, newListing: { ...state.newListing, file } });
+                      reader.readAsDataURL(file);
+                    }
+                  }
+                }),
+                state.preview ? createEl('img', { src: state.preview, class: 'mt-4 w-full h-48 object-cover rounded-md' }) : createEl('div'),
+              ]),
+              createEl('button', { class: 'btn btn-primary w-full', onClick: handleNewListing }, ['Create Listing'])
+            ])
+          ]);
+        } else if (state.view === "my-listings") {
+          content = createEl('div', {}, [
+            navBar,
+            createEl('div', { class: 'card p-6 mt-6' }, [
+              createEl('h2', { class: 'text-2xl font-bold mb-4' }, ['My Listings']),
+              createEl('div', { class: 'grid grid-cols-1 sm:grid-cols-2 gap-4' },
+                myFilteredListings.length > 0 ?
+                myFilteredListings.map(l => createEl('div', { class: 'flex items-center justify-between p-4 bg-gray-50 rounded-lg' }, [
+                  createEl('div', { class: 'flex items-center space-x-4' }, [
+                    createEl('img', { src: l.imageUrl || `https://placehold.co/64x64/2563eb/ffffff?text=${encodeURIComponent(l.title)}`, alt: l.title, class: 'w-16 h-16 object-cover rounded-md' }),
+                    createEl('span', { class: 'font-medium' }, [l.title]),
+                  ]),
+                  createEl('div', { class: 'space-x-2' }, [
+                    createEl('button', { class: 'btn btn-secondary', onClick: () => setState({ view: "edit-listing", editListing: { id: l.id, ...l } }) }, ['Edit']),
+                    createEl('button', { class: 'btn btn-danger', onClick: () => handleDeleteListing(l.id) }, ['Delete'])
+                  ])
+                ]))
+                : [createEl('p', { class: 'text-center text-gray-500 col-span-2' }, ['You have no listings yet.'])]
+              )
+            ])
+          ]);
+        } else if (state.view === "edit-listing") {
+            const l = state.editListing;
+            content = createEl('div', {}, [
+              navBar,
+              createEl('div', { class: 'card p-6 mt-6 max-w-md mx-auto' }, [
+                createEl('h2', { class: 'text-2xl font-bold mb-4' }, ['Edit Listing']),
+                state.error ? createEl('div', { class: 'bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4' }, [state.error]) : createEl('div'),
+                createEl('div', { class: 'mb-4' }, [
+                  createEl('label', { class: 'block text-sm font-medium mb-1' }, ['Title']),
+                  createEl('input', {
+                    type: 'text',
+                    class: 'input',
+                    value: l.title,
+                    onInput: (e) => setState({ editListing: { ...l, title: e.target.value } })
+                  }),
+                ]),
+                createEl('div', { class: 'mb-4' }, [
+                  createEl('label', { class: 'block text-sm font-medium mb-1' }, ['Description']),
+                  createEl('textarea', {
+                    class: 'input',
+                    value: l.description,
+                    onInput: (e) => setState({ editListing: { ...l, description: e.target.value } })
+                  }),
+                ]),
+                createEl('div', { class: 'mb-4' }, [
+                  createEl('label', { class: 'block text-sm font-medium mb-1' }, ['Category']),
+                  createEl('select', {
+                    class: 'input',
+                    onInput: (e) => setState({ editListing: { ...l, category: e.target.value } })
+                  }, categories.slice(1).map(c => createEl('option', { value: c, selected: l.category === c }, [c]))),
+                ]),
+                createEl('div', { class: 'mb-4' }, [
+                  createEl('label', { class: 'block text-sm font-medium mb-1' }, ['Price ($)']),
+                  createEl('input', {
+                    type: 'number',
+                    class: 'input',
+                    value: l.price,
+                    onInput: (e) => setState({ editListing: { ...l, price: e.target.value } })
+                  }),
+                ]),
+                createEl('div', { class: 'mb-6' }, [
+                  createEl('label', { class: 'block text-sm font-medium mb-1' }, ['Image']),
+                  createEl('input', {
+                    type: 'file',
+                    class: 'input',
+                    onChange: (e) => {
+                      const file = e.target.files[0];
+                      if (file) {
+                        const reader = new FileReader();
+                        reader.onload = (e) => setState({ editListing: { ...l, file, preview: e.target.result } });
+                        reader.readAsDataURL(file);
+                      }
+                    }
+                  }),
+                  l.preview ? createEl('img', { src: l.preview, class: 'mt-4 w-full h-48 object-cover rounded-md' }) : createEl('div'),
+                ]),
+                createEl('button', { class: 'btn btn-primary w-full', onClick: handleEditListing }, ['Save Changes']),
+                createEl('button', { class: 'btn btn-secondary w-full mt-2', onClick: () => setState({ view: "my-listings", editListing: null }) }, ['Cancel'])
+              ])
+            ]);
+        }
+        
+        appElement.innerHTML = '';
+        appElement.appendChild(content);
+        
+        if (state.message) {
+          const messageEl = createEl('div', { class: 'fixed bottom-4 left-1/2 -translate-x-1/2 bg-gray-800 text-white p-4 rounded-lg shadow-xl animate-fade-in-up' }, [state.message]);
+          appElement.appendChild(messageEl);
+          setTimeout(() => {
+            messageEl.remove();
+            state.message = '';
+          }, 3000);
+        }
+      }
+
+      render();
+
+    </script>
+  </body>
+</html>
